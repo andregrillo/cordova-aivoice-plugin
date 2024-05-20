@@ -1,0 +1,14 @@
+{
+  "name": "cordova-aivoice-plugin",
+  "version": "1.0.0",
+  "description": "",
+  "cordova": {
+    "id": "CdvAiVoice",
+    "platforms": []
+  },
+  "keywords": [
+    "ecosystem:cordova"
+  ],
+  "author": "Paulo Camilo & André Grillo - OutSystems",
+  "license": "MIT"
+}
