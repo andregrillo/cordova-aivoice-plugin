@@ -7,6 +7,15 @@
 		<clobbers target="cordova.plugins.CdvAiVoice" />
 	</js-module>
 	<platform name="ios">
+		<!-- Add usage description for speech recognition -->
+	    <config-file target="*-Info.plist" parent="NSSpeechRecognitionUsageDescription">
+	        <string>This app uses speech recognition to process your voice commands.</string>
+	    </config-file>
+
+	    <!-- Add usage description for microphone access -->
+	    <config-file target="*-Info.plist" parent="NSMicrophoneUsageDescription">
+	        <string>This app needs microphone access to record audio for speech recognition.</string>
+	    </config-file>
 		<hook type="before_plugin_install" src="hooks/install_prerequisites.js"/>
 		<hook type="after_plugin_add" src="hooks/add_swift_support.js" />
 		<config-file parent="/*" target="config.xml">
