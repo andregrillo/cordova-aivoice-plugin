@@ -1,9 +1,9 @@
 {
-  "name": "cordova-aivoice-plugin",
+  "name": "CdvAiVoice",
   "version": "1.0.0",
   "description": "",
   "cordova": {
-    "id": "CdvAiVoice",
+    "id": "com.outsystems.experts.cdvaivoice",
     "platforms": []
   },
   "keywords": [
