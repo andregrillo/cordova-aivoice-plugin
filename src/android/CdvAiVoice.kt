@@ -5,8 +5,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -20,7 +18,6 @@ import java.util.Locale
 class CdvAiVoice : CordovaPlugin() {
 
     companion object {
-        const val SILENCE_TIMEOUT: Long = 5000
         const val PERMISSION_REQUEST_CODE = 1001
 
         private const val START_LISTENING = "startListening"
@@ -29,11 +26,11 @@ class CdvAiVoice : CordovaPlugin() {
     }
 
     private var startListeningCallback: CallbackContext? = null
+    private var stopListeningCallback: CallbackContext? = null
     private var speakCallback: CallbackContext? = null
     private lateinit var textToSpeech: TextToSpeech
     private var speechRecognizer: SpeechRecognizer? = null
-    private val silenceHandler = Handler(Looper.getMainLooper())
-    private val silenceRunnable = Runnable { stopListening() }
+    private var recognizedText: String = ""
     private lateinit var currentAction: String
     private lateinit var speakText: String
 
@@ -53,7 +50,7 @@ class CdvAiVoice : CordovaPlugin() {
             }
             SPEAK -> {
                 this.speakCallback = callbackContext
-                currentAction = START_LISTENING
+                currentAction = SPEAK
                 if (hasAudioPermission()) {
                     val text = args.getString(0)
                     speakText = text
@@ -67,8 +64,10 @@ class CdvAiVoice : CordovaPlugin() {
                 true
             }
             STOP_LISTENING -> {
-                this.startListeningCallback = callbackContext
-                stopListening()
+                this.stopListeningCallback = callbackContext
+                cordova.activity.runOnUiThread {
+                    stopListening()
+                }
                 true
             }
             else -> {
@@ -97,17 +96,11 @@ class CdvAiVoice : CordovaPlugin() {
         }
         speechRecognizer?.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle) {}
-            override fun onBeginningOfSpeech() {
-                resetSilenceTimer()
-            }
-            override fun onRmsChanged(rmsdB: Float) {
-                resetSilenceTimer()
-            }
-            override fun onBufferReceived(buffer: ByteArray) {
-                resetSilenceTimer()
-            }
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray) {}
             override fun onEndOfSpeech() {
-                stopListening()
+                // Do not stop listening automatically
             }
             override fun onError(error: Int) {
                 startListeningCallback?.error("Error occurred: $error")
@@ -115,9 +108,11 @@ class CdvAiVoice : CordovaPlugin() {
             }
             override fun onResults(results: Bundle) {
                 val matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                val text = matches?.lastOrNull() ?: ""
-                startListeningCallback?.success(text)
+                recognizedText = matches?.lastOrNull() ?: ""
+                startListeningCallback?.success(recognizedText)
                 startListeningCallback = null
+                // Restart listening after getting results
+                startListening()
             }
             override fun onPartialResults(partialResults: Bundle) {}
             override fun onEvent(eventType: Int, params: Bundle) {}
@@ -125,19 +120,19 @@ class CdvAiVoice : CordovaPlugin() {
         speechRecognizer?.startListening(intent)
     }
 
-    private fun resetSilenceTimer() {
-        silenceHandler.removeCallbacks(silenceRunnable)
-        silenceHandler.postDelayed(silenceRunnable, SILENCE_TIMEOUT)
-    }
-
     private fun stopListening() {
         try {
             speechRecognizer?.stopListening()
             speechRecognizer?.cancel()
             speechRecognizer = null
-            this.startListeningCallback?.success()
+            // Return the recognized text when stopListening is called
+            if (stopListeningCallback != null) {
+                stopListeningCallback?.success(recognizedText)
+                stopListeningCallback = null
+            }
         } catch (ex: Exception) {
-            this.startListeningCallback?.error(ex.message.toString())
+            stopListeningCallback?.error(ex.message.toString())
+            stopListeningCallback = null
         }
     }
 
