@@ -1,153 +1,208 @@
 import Foundation
-import AVFoundation
 import Speech
+import AVFoundation
 
-@objc(CdvAiVoice) class CdvAiVoice: CDVPlugin {
-    
-    private let speechSynthesizer = AVSpeechSynthesizer()
-    private let audioEngine = AVAudioEngine()
+@available(iOS 13, *)
+@objc(CdvAiVoice)
+class CdvAiVoice: CDVPlugin, SFSpeechRecognizerDelegate, AVSpeechSynthesizerDelegate {
+    private var audioEngine = AVAudioEngine()
+    private var inputNode: AVAudioInputNode?
     private var speechRecognizer: SFSpeechRecognizer?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
-    
+    private var audioSession: AVAudioSession?
+    static let speechSynthesizer = AVSpeechSynthesizer()
+
+    var recognizedText: String?
+    var isProcessing: Bool = false
+
+    @objc(startListening:)
+    func startListening(command: CDVInvokedUrlCommand) {
+        // Request microphone permission
+        AVAudioSession.sharedInstance().requestRecordPermission { granted in
+            guard granted else {
+                print("Microphone permission not granted")
+                // You can call a Cordova callback here to notify the JavaScript side
+                return
+            }
+
+            DispatchQueue.main.async {
+                self.configureAudioSessionAndStartRecognition(command: command)
+            }
+        }
+    }
+
+    private func configureAudioSessionAndStartRecognition(command: CDVInvokedUrlCommand) {
+        do {
+            audioSession = AVAudioSession.sharedInstance()
+            try audioSession?.setCategory(.record, mode: .measurement, options: .duckOthers)
+            print("Audio session category set successfully")
+            try audioSession?.setActive(true, options: .notifyOthersOnDeactivation)
+            print("Audio session activated successfully")
+
+            // Print current audio route
+            let currentRoute = AVAudioSession.sharedInstance().currentRoute
+            for output in currentRoute.outputs {
+                print("Current audio output: \(output.portType.rawValue) - \(output.portName)")
+            }
+
+            // Initialize the audio engine
+            audioEngine = AVAudioEngine()
+
+            // Initialize and verify input node
+            let inputNode = audioEngine.inputNode
+            print("Audio engine input node: \(inputNode)")
+
+            // Initialize and verify output node
+            let outputNode = audioEngine.outputNode
+            print("Audio engine output node: \(outputNode)")
+
+            speechRecognizer = SFSpeechRecognizer()
+            print("Supports on device recognition: \(speechRecognizer?.supportsOnDeviceRecognition == true ? "✅" : "🔴")")
+
+            recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+
+            guard let speechRecognizer = speechRecognizer,
+                  speechRecognizer.isAvailable,
+                  let recognitionRequest = recognitionRequest else {
+                print("Speech recognizer setup failed")
+                return
+            }
+
+            speechRecognizer.delegate = self
+
+            let recordingFormat = inputNode.outputFormat(forBus: 0)
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { (buffer: AVAudioPCMBuffer, when: AVAudioTime) in
+                recognitionRequest.append(buffer)
+            }
+
+            recognitionTask = speechRecognizer.recognitionTask(with: recognitionRequest) { [weak self] result, error in
+                if let error = error {
+                    print("Recognition error: \(error.localizedDescription)")
+                    self?.stopAndReturnResult(command: command)
+                    return
+                }
+
+                if let result = result {
+                    self?.recognizedText = result.bestTranscription.formattedString
+                    print("Recognized text: \(self?.recognizedText ?? "")")
+                }
+            }
+
+            do {
+                try audioEngine.start()
+                isProcessing = true
+                print("Audio engine started successfully")
+            } catch {
+                print("Couldn't start audio engine: \(error.localizedDescription)")
+                stopAndReturnResult(command: command)
+            }
+        } catch {
+            print("Audio session configuration failed: \(error.localizedDescription)")
+            // Optionally, you can call a Cordova callback here to notify the JavaScript side
+        }
+    }
+
+    @objc(stopListening:)
+    func stopListening(command: CDVInvokedUrlCommand) {
+        stopAndReturnResult(command: command)
+    }
+
+    private func stopAndReturnResult(command: CDVInvokedUrlCommand) {
+        recognitionTask?.cancel()
+        
+        audioEngine.stop()
+        audioEngine.inputNode.removeTap(onBus: 0)
+        try? audioSession?.setActive(false)
+        
+        // Set the audio session back to playback
+        do {
+            try audioSession?.setCategory(.playback, mode: .default, options: .duckOthers)
+            try audioSession?.setActive(true)
+            print("Audio session category set to playback")
+        } catch {
+            print("Error setting audio session category to playback: \(error.localizedDescription)")
+        }
+
+        audioSession = nil
+        
+        isProcessing = false
+        
+        recognitionRequest = nil
+        recognitionTask = nil
+        speechRecognizer = nil
+        
+        // Send the final recognized text back to JavaScript
+        let pluginResult = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: recognizedText)
+        self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
+    }
+
     @objc(speak:)
     func speak(command: CDVInvokedUrlCommand) {
-        guard let text = command.arguments[0] as? String else {
+        guard let sentence = command.arguments[0] as? String else {
             let pluginResult = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Invalid argument")
             self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
             return
         }
-        
-        let utterance = AVSpeechUtterance(string: text)
+
+        // Reset and configure audio session for playback
+        resetAndConfigureAudioSessionForPlayback()
+
+        let utterance = AVSpeechUtterance(string: sentence)
         utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
-        
-        speechSynthesizer.speak(utterance)
-        
-        let pluginResult = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: "Speaking")
-        self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
-    }
-    
-    @objc(startListening:)
-    func startListening(command: CDVInvokedUrlCommand) {
-        SFSpeechRecognizer.requestAuthorization { authStatus in
-            switch authStatus {
-            case .authorized:
-                self.startRecording(command: command)
-            default:
-                let pluginResult = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Speech recognition not authorized")
-                self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
-            }
-        }
-    }
-    
-    private func startRecording(command: CDVInvokedUrlCommand) {
-        speechRecognizer = SFSpeechRecognizer()
-        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-        
-        guard let recognitionRequest = recognitionRequest else {
-            let pluginResult = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Unable to create request")
-            self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
-            return
-        }
-        
-        let inputNode = audioEngine.inputNode
-        let recognitionFormat = inputNode.outputFormat(forBus: 0)
-        
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recognitionFormat) { buffer, _ in
-            recognitionRequest.append(buffer)
-        }
-        
-        audioEngine.prepare()
-        try? audioEngine.start()
-        
-        recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { result, error in
-            if let result = result {
-                let text = result.bestTranscription.formattedString
-                self.sendToOpenAI(text: text) { apiResult in
-                    switch apiResult {
-                    case .success(let json):
-                        let action = json["action"] as? String ?? ""
-                        let toSpeak = json["toSpeak"] as? String ?? ""
-                        let valid = json["valid"] as? Bool ?? false
-                        
-                        let response: [String: Any] = [
-                            "action": action,
-                            "toSpeak": toSpeak,
-                            "valid": valid
-                        ]
-                        
-                        let pluginResult = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response)
-                        self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
-                    case .failure(let error):
-                        let pluginResult = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: error.localizedDescription)
-                        self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
-                    }
-                }
-            } else if let error = error {
-                let pluginResult = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: error.localizedDescription)
-                self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
-            }
-        }
+
+        CdvAiVoice.speechSynthesizer.delegate = self  // Set delegate to handle completion and errors
+        CdvAiVoice.speechSynthesizer.speak(utterance)
     }
 
-    
-    @objc(stopListening:)
-    func stopListening(command: CDVInvokedUrlCommand) {
-        audioEngine.stop()
-        recognitionRequest?.endAudio()
-        
-        let pluginResult = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: "Stopped listening")
-        self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
-    }
-
-    private func sendToOpenAI(text: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {
-    let apiKey = "your_openai_api_key"
-    let url = URL(string: "https://api.openai.com/v1/your-endpoint")!
-    
-    var request = URLRequest(url: url)
-    request.httpMethod = "POST"
-    request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    
-    let parameters: [String: Any] = [
-        "model": "gpt-3.5-turbo",
-        "prompt": text,
-        "max_tokens": 1000,
-        "temperature": 0.7
-    ]
-    
-    do {
-        request.httpBody = try JSONSerialization.data(withJSONObject: parameters, options: [])
-    } catch {
-        completion(.failure(error))
-        return
-    }
-    
-    let task = URLSession.shared.dataTask(with: request) { data, response, error in
-        if let error = error {
-            completion(.failure(error))
-            return
-        }
-        
-        guard let data = data else {
-            let error = NSError(domain: "com.yourplugin.error", code: 0, userInfo: [NSLocalizedDescriptionKey: "No data"])
-            completion(.failure(error))
-            return
-        }
-        
+    private func resetAndConfigureAudioSessionForPlayback() {
+        // Reset and configure the audio session for playback
         do {
-            if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
-                completion(.success(json))
-            } else {
-                let error = NSError(domain: "com.yourplugin.error", code: 0, userInfo: [NSLocalizedDescriptionKey: "Invalid JSON"])
-                completion(.failure(error))
-            }
+            try audioSession?.setCategory(.playback, mode: .default, options: .duckOthers)
+            try audioSession?.setActive(true)
+            print("Audio session category set to playback for speech synthesis")
         } catch {
-            completion(.failure(error))
+            print("Error setting audio session category for playback: \(error.localizedDescription)")
         }
     }
-    
-    task.resume()
-}
 
+    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        print("Speech finished successfully")
+        // Handle successful completion if needed
+    }
+
+    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        print("Speech was cancelled")
+        // Handle cancellation if needed
+    }
+
+    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        print("Speech started")
+        // Handle speech start if needed
+    }
+
+    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didPause utterance: AVSpeechUtterance) {
+        print("Speech paused")
+        // Handle speech pause if needed
+    }
+
+    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didContinue utterance: AVSpeechUtterance) {
+        print("Speech continued")
+        // Handle speech continue if needed
+    }
+
+    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFail error: Error) {
+        print("Speech failed with error: \(error.localizedDescription)")
+        // Handle speech failure if needed
+    }
+
+    public func speechRecognizer(_ speechRecognizer: SFSpeechRecognizer, availabilityDidChange available: Bool) {
+        if available {
+            print("✅ Available")
+        } else {
+            print("🔴 Unavailable")
+            recognizedText = "Text recognition unavailable. Sorry!"
+            stopAndReturnResult(command: CDVInvokedUrlCommand()) // Handle unavailable state
+        }
+    }
 }
