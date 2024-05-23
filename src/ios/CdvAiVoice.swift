@@ -12,12 +12,24 @@ class CdvAiVoice: CDVPlugin, SFSpeechRecognizerDelegate, AVSpeechSynthesizerDele
     private var recognitionTask: SFSpeechRecognitionTask?
     private var audioSession: AVAudioSession?
     static let speechSynthesizer = AVSpeechSynthesizer()
-
+    private var callbackId: String?
+    private var autoStopRecording: Bool?
+    
     var recognizedText: String?
     var isProcessing: Bool = false
+    private var silenceTimer: Timer?
+    private let silenceThreshold: TimeInterval = 2.0
+//    private var silenceDbLevel: Double
+    private var silenceEventsCount: Int = 0
 
     @objc(startListening:)
     func startListening(command: CDVInvokedUrlCommand) {
+        if command.arguments.count > 0, let autoStop = command.arguments[0] as? Bool {
+            autoStopRecording = autoStop
+        } else {
+            autoStopRecording = false
+        }
+        self.callbackId = command.callbackId
         // Request microphone permission
         AVAudioSession.sharedInstance().requestRecordPermission { granted in
             guard granted else {
@@ -27,12 +39,12 @@ class CdvAiVoice: CDVPlugin, SFSpeechRecognizerDelegate, AVSpeechSynthesizerDele
             }
 
             DispatchQueue.main.async {
-                self.configureAudioSessionAndStartRecognition(command: command)
+                self.configureAudioSessionAndStartRecognition()
             }
         }
     }
 
-    private func configureAudioSessionAndStartRecognition(command: CDVInvokedUrlCommand) {
+    private func configureAudioSessionAndStartRecognition() {
         do {
             audioSession = AVAudioSession.sharedInstance()
             try audioSession?.setCategory(.record, mode: .measurement, options: .duckOthers)
@@ -72,14 +84,19 @@ class CdvAiVoice: CDVPlugin, SFSpeechRecognizerDelegate, AVSpeechSynthesizerDele
             speechRecognizer.delegate = self
 
             let recordingFormat = inputNode.outputFormat(forBus: 0)
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { (buffer: AVAudioPCMBuffer, when: AVAudioTime) in
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] (buffer: AVAudioPCMBuffer, when: AVAudioTime) in
                 recognitionRequest.append(buffer)
+                if let autoStop = self?.autoStopRecording {
+                    if autoStop {
+                        self?.checkForSilence(buffer: buffer)
+                    }
+                }
             }
 
             recognitionTask = speechRecognizer.recognitionTask(with: recognitionRequest) { [weak self] result, error in
                 if let error = error {
                     print("Recognition error: \(error.localizedDescription)")
-                    self?.stopAndReturnResult(command: command)
+                    self?.stopAndReturnResult()
                     return
                 }
 
@@ -95,22 +112,62 @@ class CdvAiVoice: CDVPlugin, SFSpeechRecognizerDelegate, AVSpeechSynthesizerDele
                 print("Audio engine started successfully")
             } catch {
                 print("Couldn't start audio engine: \(error.localizedDescription)")
-                stopAndReturnResult(command: command)
+                stopAndReturnResult()
             }
         } catch {
             print("Audio session configuration failed: \(error.localizedDescription)")
-            // Optionally, you can call a Cordova callback here to notify the JavaScript side
+            //Cordova callback here to notify the JavaScript side
+        }
+    }
+
+    private func checkForSilence(buffer: AVAudioPCMBuffer) {
+        let channelData = buffer.floatChannelData![0]
+        let channelDataValueArray = stride(from: 0,
+                                           to: Int(buffer.frameLength),
+                                           by: buffer.stride).map { channelData[$0] }
+        
+        let rms = sqrt(channelDataValueArray.map { $0 * $0 }.reduce(0, +) / Float(buffer.frameLength))
+        let avgPower = 20 * log10(rms)
+        
+        print("Current dB level: \(avgPower)")
+
+        if avgPower < -50 {
+//            if silenceTimer == nil {
+                silenceEventsCount += 1
+                if silenceEventsCount >= 10 {
+                    if let callbackId = self.callbackId {
+                        silenceEventsCount = 0
+                        stopAndReturnResult()
+                    }
+                }
+        } else {
+            silenceEventsCount = 0
+                print("🔊 Voice detected")
+        }
+    }
+
+    @objc private func handleSilenceDetected() {
+        print("Silence detected for \(silenceThreshold) seconds")
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+        if isProcessing {
+            print("Stopping recording due to silence")
+            let command = CDVInvokedUrlCommand()
+            stopAndReturnResult()
         }
     }
 
     @objc(stopListening:)
     func stopListening(command: CDVInvokedUrlCommand) {
-        stopAndReturnResult(command: command)
+        print("✋ stopListening called")
+        stopAndReturnResult()
+        let pluginResult = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: "Stopping recording...")
+        self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
     }
 
-    private func stopAndReturnResult(command: CDVInvokedUrlCommand) {
+    private func stopAndReturnResult() {
+        print("stopAndReturnResult called")
         recognitionTask?.cancel()
-        
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         try? audioSession?.setActive(false)
@@ -134,7 +191,9 @@ class CdvAiVoice: CDVPlugin, SFSpeechRecognizerDelegate, AVSpeechSynthesizerDele
         
         // Send the final recognized text back to JavaScript
         let pluginResult = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: recognizedText)
-        self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
+        self.recognizedText = ""
+        self.commandDelegate.send(pluginResult, callbackId: self.callbackId)
+        self.callbackId = nil
     }
 
     @objc(speak:)
@@ -166,35 +225,35 @@ class CdvAiVoice: CDVPlugin, SFSpeechRecognizerDelegate, AVSpeechSynthesizerDele
         }
     }
 
-    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        print("Speech finished successfully")
-        // Handle successful completion if needed
-    }
+//    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+//        print("Speech finished successfully")
+//        // Handle successful completion if needed
+//    }
+//
+//    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+//        print("Speech was cancelled")
+//        // Handle cancellation if needed
+//    }
+//
+//    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+//        print("Speech started")
+//        // Handle speech start if needed
+//    }
 
-    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        print("Speech was cancelled")
-        // Handle cancellation if needed
-    }
-
-    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        print("Speech started")
-        // Handle speech start if needed
-    }
-
-    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didPause utterance: AVSpeechUtterance) {
-        print("Speech paused")
-        // Handle speech pause if needed
-    }
-
-    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didContinue utterance: AVSpeechUtterance) {
-        print("Speech continued")
-        // Handle speech continue if needed
-    }
-
-    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFail error: Error) {
-        print("Speech failed with error: \(error.localizedDescription)")
-        // Handle speech failure if needed
-    }
+//    public func speechSynthesizer(_ synthesizer: AVSpeechUtterance, didPause utterance: AVSpeechUtterance) {
+//        print("Speech paused")
+//        // Handle speech pause if needed
+//    }
+//
+//    public func speechSynthesizer(_ synthesizer: AVSpeechUtterance, didContinue utterance: AVSpeechUtterance) {
+//        print("Speech continued")
+//        // Handle speech continue if needed
+//    }
+//
+//    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFail error: Error) {
+//        print("Speech failed with error: \(error.localizedDescription)")
+//        // Handle speech failure if needed
+//    }
 
     public func speechRecognizer(_ speechRecognizer: SFSpeechRecognizer, availabilityDidChange available: Bool) {
         if available {
@@ -202,7 +261,7 @@ class CdvAiVoice: CDVPlugin, SFSpeechRecognizerDelegate, AVSpeechSynthesizerDele
         } else {
             print("🔴 Unavailable")
             recognizedText = "Text recognition unavailable. Sorry!"
-            stopAndReturnResult(command: CDVInvokedUrlCommand()) // Handle unavailable state
+            stopListening(command: CDVInvokedUrlCommand()) // Handle unavailable state
         }
     }
 }
