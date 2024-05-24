@@ -198,6 +198,8 @@ class CdvAiVoice: CDVPlugin, SFSpeechRecognizerDelegate, AVSpeechSynthesizerDele
 
     @objc(speak:)
     func speak(command: CDVInvokedUrlCommand) {
+
+        self.callbackId = command.callbackId
         guard let sentence = command.arguments[0] as? String else {
             let pluginResult = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Invalid argument")
             self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
@@ -212,9 +214,6 @@ class CdvAiVoice: CDVPlugin, SFSpeechRecognizerDelegate, AVSpeechSynthesizerDele
 
         CdvAiVoice.speechSynthesizer.delegate = self  // Set delegate to handle completion and errors
         CdvAiVoice.speechSynthesizer.speak(utterance)
-
-        let pluginResult = CDVPluginResult(status: CDVCommandStatus_OK)
-        self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
     }
 
     private func resetAndConfigureAudioSessionForPlayback() {
@@ -228,10 +227,13 @@ class CdvAiVoice: CDVPlugin, SFSpeechRecognizerDelegate, AVSpeechSynthesizerDele
         }
     }
 
-//    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-//        print("Speech finished successfully")
-//        // Handle successful completion if needed
-//    }
+    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        print("Speech finished successfully")
+        // Handle successful completion if needed
+
+        let pluginResult = CDVPluginResult(status: CDVCommandStatus_OK)
+        self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
+    }
 //
 //    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
 //        print("Speech was cancelled")
