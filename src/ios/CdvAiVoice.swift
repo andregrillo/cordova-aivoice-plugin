@@ -212,6 +212,9 @@ class CdvAiVoice: CDVPlugin, SFSpeechRecognizerDelegate, AVSpeechSynthesizerDele
 
         CdvAiVoice.speechSynthesizer.delegate = self  // Set delegate to handle completion and errors
         CdvAiVoice.speechSynthesizer.speak(utterance)
+
+        let pluginResult = CDVPluginResult(status: CDVCommandStatus_OK)
+        self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
     }
 
     private func resetAndConfigureAudioSessionForPlayback() {
