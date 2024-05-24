@@ -232,7 +232,7 @@ class CdvAiVoice: CDVPlugin, SFSpeechRecognizerDelegate, AVSpeechSynthesizerDele
         // Handle successful completion if needed
 
         let pluginResult = CDVPluginResult(status: CDVCommandStatus_OK)
-        self.commandDelegate.send(pluginResult, callbackId: command.callbackId)
+        self.commandDelegate.send(pluginResult, callbackId: self.callbackId)
     }
 //
 //    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
