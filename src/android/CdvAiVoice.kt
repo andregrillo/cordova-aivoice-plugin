@@ -5,6 +5,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -12,7 +14,6 @@ import android.speech.tts.TextToSpeech
 import org.apache.cordova.CordovaPlugin
 import org.apache.cordova.CallbackContext
 import org.json.JSONArray
-import java.lang.Exception
 import java.util.Locale
 
 class CdvAiVoice : CordovaPlugin() {
@@ -25,20 +26,23 @@ class CdvAiVoice : CordovaPlugin() {
         private const val SPEAK = "speak"
     }
 
-    private var startListeningCallback: CallbackContext? = null
-    private var stopListeningCallback: CallbackContext? = null
-    private var speakCallback: CallbackContext? = null
+    private var callbackContext: CallbackContext? = null
     private lateinit var textToSpeech: TextToSpeech
     private var speechRecognizer: SpeechRecognizer? = null
     private var recognizedText: String = ""
     private lateinit var currentAction: String
     private lateinit var speakText: String
 
+    private val timeoutDuration: Long = 2000 // 5 seconds
+    private var timeoutHandler: Handler? = null
+    private var autoStopRecording: Boolean = false
+
     override fun execute(action: String, args: JSONArray, callbackContext: CallbackContext): Boolean {
+        this.callbackContext = callbackContext
         return when (action) {
             START_LISTENING -> {
-                this.startListeningCallback = callbackContext
                 currentAction = START_LISTENING
+                autoStopRecording = args.getBoolean(0);
                 if (hasAudioPermission()) {
                     cordova.activity.runOnUiThread {
                         startListening()
@@ -49,7 +53,6 @@ class CdvAiVoice : CordovaPlugin() {
                 true
             }
             SPEAK -> {
-                this.speakCallback = callbackContext
                 currentAction = SPEAK
                 if (hasAudioPermission()) {
                     val text = args.getString(0)
@@ -64,7 +67,6 @@ class CdvAiVoice : CordovaPlugin() {
                 true
             }
             STOP_LISTENING -> {
-                this.stopListeningCallback = callbackContext
                 cordova.activity.runOnUiThread {
                     stopListening()
                 }
@@ -95,26 +97,44 @@ class CdvAiVoice : CordovaPlugin() {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
         }
         speechRecognizer?.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle) {}
-            override fun onBeginningOfSpeech() {}
+            override fun onReadyForSpeech(params: Bundle) {
+                startTimeout()
+            }
+
+            override fun onBeginningOfSpeech() {
+                stopTimeout()
+            }
+
             override fun onRmsChanged(rmsdB: Float) {}
+
             override fun onBufferReceived(buffer: ByteArray) {}
+
             override fun onEndOfSpeech() {
                 // Do not stop listening automatically
             }
+
             override fun onError(error: Int) {
-                startListeningCallback?.error("Error occurred: $error")
-                startListeningCallback = null
+                if (autoStopRecording) {
+                    stopTimeout()
+                }
+                callbackContext?.error("Error occurred: $error")
+              //  callbackContext = null
             }
+
             override fun onResults(results: Bundle) {
+                if (autoStopRecording) {
+                    stopTimeout()
+                }
                 val matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 recognizedText = matches?.lastOrNull() ?: ""
-                startListeningCallback?.success(recognizedText)
-                startListeningCallback = null
+                callbackContext?.success(recognizedText)
+               // callbackContext = null
                 // Restart listening after getting results
                 startListening()
             }
+
             override fun onPartialResults(partialResults: Bundle) {}
+
             override fun onEvent(eventType: Int, params: Bundle) {}
         })
         speechRecognizer?.startListening(intent)
@@ -122,17 +142,15 @@ class CdvAiVoice : CordovaPlugin() {
 
     private fun stopListening() {
         try {
+            stopTimeout() // Clear timeout handler
             speechRecognizer?.stopListening()
             speechRecognizer?.cancel()
             speechRecognizer = null
-            // Return the recognized text when stopListening is called
-            if (stopListeningCallback != null) {
-                stopListeningCallback?.success(recognizedText)
-                stopListeningCallback = null
+            if (callbackContext != null) {
+                callbackContext?.success()
             }
         } catch (ex: Exception) {
-            stopListeningCallback?.error(ex.message.toString())
-            stopListeningCallback = null
+            callbackContext?.error(ex.message.toString())
         }
     }
 
@@ -148,8 +166,7 @@ class CdvAiVoice : CordovaPlugin() {
                     }
                 }
             } else {
-                speakCallback?.error("Permission denied")
-                startListeningCallback?.error("Permission denied")
+                callbackContext?.error("Permission denied")
             }
         }
     }
@@ -163,12 +180,25 @@ class CdvAiVoice : CordovaPlugin() {
                 val result = textToSpeech.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, null, null)
                 if (result == TextToSpeech.ERROR) {
                     println("Error in converting Text to Speech!")
-                    speakCallback?.error("Error in converting Text to Speech!")
+                    callbackContext?.error("Error in converting Text to Speech!")
                 }
             } else {
-                speakCallback?.error("Initialization of TextToSpeech failed!")
+                callbackContext?.error("Initialization of TextToSpeech failed!")
                 println("Initialization of TextToSpeech failed!")
             }
         }
+    }
+
+    private fun startTimeout() {
+        stopTimeout() // Ensure any existing timeout is stopped
+        timeoutHandler = Handler(Looper.getMainLooper())
+        timeoutHandler?.postDelayed({
+            stopListening()
+        }, timeoutDuration)
+    }
+
+    private fun stopTimeout() {
+        timeoutHandler?.removeCallbacksAndMessages(null)
+        timeoutHandler = null
     }
 }
