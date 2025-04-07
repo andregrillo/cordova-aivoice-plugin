@@ -11,10 +11,12 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import org.apache.cordova.CordovaPlugin
 import org.apache.cordova.CallbackContext
 import org.json.JSONArray
 import java.util.Locale
+import java.util.UUID
 
 class CdvAiVoice : CordovaPlugin() {
 
@@ -177,14 +179,26 @@ class CdvAiVoice : CordovaPlugin() {
                 textToSpeech.language = Locale.US
                 textToSpeech.setSpeechRate(1.0f)
 
-                val result = textToSpeech.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, null, null)
+                textToSpeech.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {}
+
+                    override fun onDone(utteranceId: String?) {
+                        callbackContext?.success("Speech finished")
+                    }
+
+                    override fun onError(utteranceId: String?) {
+                        callbackContext?.error("Error in TTS playback")
+                    }
+                })
+
+                val utteranceId = UUID.randomUUID().toString()
+                val result = textToSpeech.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+
                 if (result == TextToSpeech.ERROR) {
-                    println("Error in converting Text to Speech!")
                     callbackContext?.error("Error in converting Text to Speech!")
                 }
             } else {
                 callbackContext?.error("Initialization of TextToSpeech failed!")
-                println("Initialization of TextToSpeech failed!")
             }
         }
     }
